@@ -1,8 +1,6 @@
 import os
 import json
 import time
-import tempfile
-import atexit
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,7 +9,6 @@ from contracts import AgentExecutionTrace
 
 app = FastAPI(title="Forensic Operations Gateway")
 
-# Allow your local Svelte UI to talk to this cloud API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -19,34 +16,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 1. Hardcode the fallback so it never evaluates to None
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka-888b017-haseebq-ai-safety.k.aivencloud.com:26518")
 
-# Create secure temporary files from Render environment variables
-tmp_key = tempfile.NamedTemporaryFile(delete=False, mode='w')
-tmp_key.write(os.getenv("SSL_KEY", ""))
-tmp_key.close()
+# 2. Loudly verify Secret Files exist and dynamically find their path
+cert_dir = ""
+for path in [".", "/etc/secrets"]:
+    if os.path.exists(f"{path}/service.key"):
+        cert_dir = path
+        break
 
-tmp_cert = tempfile.NamedTemporaryFile(delete=False, mode='w')
-tmp_cert.write(os.getenv("SSL_CERT", ""))
-tmp_cert.close()
+if not cert_dir:
+    raise FileNotFoundError(
+        "CRITICAL ERROR: Cannot find SSL Secret Files. "
+        "Ensure 'service.key', 'service.cert', and 'ca.pem' exist in the Render 'Secret Files' tab."
+    )
 
-tmp_ca = tempfile.NamedTemporaryFile(delete=False, mode='w')
-tmp_ca.write(os.getenv("SSL_CA", ""))
-tmp_ca.close()
-
-def cleanup_certs():
-    for file_path in [tmp_key.name, tmp_cert.name, tmp_ca.name]:
-        if os.path.exists(file_path):
-            os.unlink(file_path)
-atexit.register(cleanup_certs)
-
-# Connect to Aiven Kafka
+# Connect to Aiven
 producer = KafkaProducer(
     bootstrap_servers=[KAFKA_BROKER],
     security_protocol="SSL",
-    ssl_keyfile=tmp_key.name,
-    ssl_certfile=tmp_cert.name,
-    ssl_cafile=tmp_ca.name,
+    ssl_keyfile=f"{cert_dir}/service.key",
+    ssl_certfile=f"{cert_dir}/service.cert",
+    ssl_cafile=f"{cert_dir}/ca.pem",
     api_version=(2, 5, 0),
     value_serializer=lambda v: json.dumps(v).encode('utf-8')
 )
@@ -55,17 +47,18 @@ heartbeat_consumer = KafkaConsumer(
     'hpc-heartbeat',
     bootstrap_servers=[KAFKA_BROKER],
     security_protocol="SSL",
-    ssl_keyfile=tmp_key.name,
-    ssl_certfile=tmp_cert.name,
-    ssl_cafile=tmp_ca.name,
+    ssl_keyfile=f"{cert_dir}/service.key",
+    ssl_certfile=f"{cert_dir}/service.cert",
+    ssl_cafile=f"{cert_dir}/ca.pem",
     api_version=(2, 5, 0),
     auto_offset_reset='latest',
     enable_auto_commit=True,
     value_deserializer=lambda x: json.loads(x.decode('utf-8'))
 )
 
+# Note: Removed 'async' so FastAPI automatically handles the blocking Kafka poll in a threadpool!
 @app.get("/api/v1/hpc-status")
-async def get_hpc_status():
+def get_hpc_status():
     raw_messages = heartbeat_consumer.poll(timeout_ms=3000)
     if not raw_messages:
         return {"status": "OFFLINE", "message": "No heartbeat detected."}
@@ -77,7 +70,7 @@ async def get_hpc_status():
     return {"status": "OFFLINE"}
 
 @app.post("/api/v1/ingest", status_code=202)
-async def ingest_trace(trace: AgentExecutionTrace):
+def ingest_trace(trace: AgentExecutionTrace):
     try:
         producer.send("ops-database-cdc-stream", trace.model_dump(mode='json'))
         producer.flush()
