@@ -28,16 +28,26 @@ ssl_ca_data = os.getenv("KAFKA_SSL_CA")
 if not all([ssl_key_data, ssl_cert_data, ssl_ca_data]):
     raise ValueError("CRITICAL ERROR: KAFKA_SSL environment variables are missing.")
 
+def clean_pem(raw_text):
+    """Repairs cloud text flattening to ensure strict OpenSSL formatting"""
+    # Replace literal escaped 'n' characters with actual line breaks
+    repaired = raw_text.replace('\\n', '\n')
+    # Ensure it ends with a clean newline block
+    return repaired.strip() + "\n"
+
 tmp_key = tempfile.NamedTemporaryFile(delete=False, mode='w')
-tmp_key.write(ssl_key_data.strip())
+tmp_key.write(clean_pem(ssl_key_data))
+tmp_key.flush() # Force write to disk
 tmp_key.close()
 
 tmp_cert = tempfile.NamedTemporaryFile(delete=False, mode='w')
-tmp_cert.write(ssl_cert_data.strip())
+tmp_cert.write(clean_pem(ssl_cert_data))
+tmp_cert.flush()
 tmp_cert.close()
 
 tmp_ca = tempfile.NamedTemporaryFile(delete=False, mode='w')
-tmp_ca.write(ssl_ca_data.strip())
+tmp_ca.write(clean_pem(ssl_ca_data))
+tmp_ca.flush()
 tmp_ca.close()
 
 def cleanup_certs():
