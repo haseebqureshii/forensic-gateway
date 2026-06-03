@@ -73,7 +73,7 @@ def get_hpc_status():
     for tp, msgs in raw_messages.items():
         if not msgs: continue
         latest_msg = msgs[-1].value
-        if time.time() - latest_msg["timestamp"] < 30:
+        if time.time() - latest_msg["timestamp"] < 65:
             return {"status": "ONLINE"}
     return {"status": "OFFLINE"}
 
