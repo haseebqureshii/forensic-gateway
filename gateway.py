@@ -16,29 +16,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 1. Hardcode the fallback so it never evaluates to None
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka-888b017-haseebq-ai-safety.k.aivencloud.com:26518")
 
-# 2. Loudly verify Secret Files exist and dynamically find their path
+# The Ultimate Path Finder
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+search_paths = [BASE_DIR, ".", "/etc/secrets", "/opt/render/project/src"]
+
 cert_dir = ""
-for path in [".", "/etc/secrets"]:
-    if os.path.exists(f"{path}/service.key"):
+for path in search_paths:
+    if os.path.exists(os.path.join(path, "service.key")):
         cert_dir = path
         break
 
 if not cert_dir:
+    # If it fails, print the exact hard drive contents to the Render logs
+    print(f"[DEBUG] Current working directory: {os.getcwd()}")
+    print(f"[DEBUG] Files in BASE_DIR ({BASE_DIR}): {os.listdir(BASE_DIR)}")
+    if os.path.exists("/etc/secrets"):
+        print(f"[DEBUG] Files in /etc/secrets: {os.listdir('/etc/secrets')}")
+    
     raise FileNotFoundError(
-        "CRITICAL ERROR: Cannot find SSL Secret Files. "
-        "Ensure 'service.key', 'service.cert', and 'ca.pem' exist in the Render 'Secret Files' tab."
+        "CRITICAL ERROR: Cannot find SSL Secret Files. Check the [DEBUG] logs above this error to see what Render actually mounted."
     )
+
+print(f"[SUCCESS] Found SSL certificates in: {cert_dir}")
 
 # Connect to Aiven
 producer = KafkaProducer(
     bootstrap_servers=[KAFKA_BROKER],
     security_protocol="SSL",
-    ssl_keyfile=f"{cert_dir}/service.key",
-    ssl_certfile=f"{cert_dir}/service.cert",
-    ssl_cafile=f"{cert_dir}/ca.pem",
+    ssl_keyfile=os.path.join(cert_dir, "service.key"),
+    ssl_certfile=os.path.join(cert_dir, "service.cert"),
+    ssl_cafile=os.path.join(cert_dir, "ca.pem"),
     api_version=(2, 5, 0),
     value_serializer=lambda v: json.dumps(v).encode('utf-8')
 )
@@ -47,16 +56,15 @@ heartbeat_consumer = KafkaConsumer(
     'hpc-heartbeat',
     bootstrap_servers=[KAFKA_BROKER],
     security_protocol="SSL",
-    ssl_keyfile=f"{cert_dir}/service.key",
-    ssl_certfile=f"{cert_dir}/service.cert",
-    ssl_cafile=f"{cert_dir}/ca.pem",
+    ssl_keyfile=os.path.join(cert_dir, "service.key"),
+    ssl_certfile=os.path.join(cert_dir, "service.cert"),
+    ssl_cafile=os.path.join(cert_dir, "ca.pem"),
     api_version=(2, 5, 0),
     auto_offset_reset='latest',
     enable_auto_commit=True,
     value_deserializer=lambda x: json.loads(x.decode('utf-8'))
 )
 
-# Note: Removed 'async' so FastAPI automatically handles the blocking Kafka poll in a threadpool!
 @app.get("/api/v1/hpc-status")
 def get_hpc_status():
     raw_messages = heartbeat_consumer.poll(timeout_ms=3000)
